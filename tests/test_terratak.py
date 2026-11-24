@@ -62,12 +62,13 @@ class TerraTAKTests(unittest.TestCase):
         self.images.mkdir()
         self.lines = []
         self._orig = (terratak.IMAGE_DIR, terratak.CONFIG_DIR, terratak._run, terratak._stream, terratak.engine,
-                      terratak.daemon_ok, terratak.wait_healthy, terratak.host_arch, takcerts.tak_listening)
+                      terratak.daemon_ok, terratak.wait_healthy, terratak.host_arch, takcerts.tak_listening, terratak.HOOK_DIR)
         terratak.IMAGE_DIR = self.images
         terratak.CONFIG_DIR = self.tmp / "config"
         terratak.engine = lambda: "/usr/bin/docker"
         terratak.daemon_ok = lambda exe: True
-        terratak.wait_healthy = lambda port, log, timeout=0: True
+        terratak.wait_healthy = lambda port, log, timeout=0, tls=False: True
+        terratak.HOOK_DIR = self.tmp / "hooks"
         terratak.host_arch = lambda: "amd64"
         takcerts.tak_listening = lambda port=0, host="": False
         self.stream_calls = []
@@ -75,7 +76,7 @@ class TerraTAKTests(unittest.TestCase):
 
     def tearDown(self):
         (terratak.IMAGE_DIR, terratak.CONFIG_DIR, terratak._run, terratak._stream, terratak.engine,
-         terratak.daemon_ok, terratak.wait_healthy, terratak.host_arch, takcerts.tak_listening) = self._orig
+         terratak.daemon_ok, terratak.wait_healthy, terratak.host_arch, takcerts.tak_listening, terratak.HOOK_DIR) = self._orig
         shutil.rmtree(str(self.tmp), ignore_errors=True)
 
     def _text(self):
@@ -159,6 +160,12 @@ class TerraTAKTests(unittest.TestCase):
         self.assertIn("%s:/config:ro" % terratak.CONFIG_DIR, a)
         self.assertNotIn("secret1", " ".join(a))
         self.assertIn("--label", a)
+        a = terratak.run_args("/usr/bin/docker", "terratak:0.8.6", s, tls=True)
+        self.assertIn("TERRATAK_SERVER_CONFIG_FILES=/config/security.yaml:/config/tls.yaml", a)
+        self.assertEqual(a[a.index("--health-cmd") + 1], "curl -fk https://localhost:8080/observe/health || exit 1")
+        self.assertEqual(a.count("%s:/config:ro" % terratak.CONFIG_DIR), 1)        # one mount even with both files
+        a = terratak.run_args("/usr/bin/docker", "terratak:0.8.6", dict(terratak.DEFAULTS), tls=True)
+        self.assertIn("TERRATAK_SERVER_CONFIG_FILES=/config/tls.yaml", a)
 
     # -- install ---------------------------------------------------------------
 
@@ -176,6 +183,8 @@ class TerraTAKTests(unittest.TestCase):
         self.assertIn("TERRATAK RUNNING", t)
         self.assertIn("no login configured", t)
         self.assertIn("left alone", t)
+        self.assertIn("plain HTTP", t)
+        self.assertNotIn("--health-cmd", run.first("docker", "run"))
         self.assertFalse((terratak.CONFIG_DIR / "security.yaml").exists())
         self.assertFalse(takcerts._job_lock.locked())
 
@@ -219,7 +228,7 @@ class TerraTAKTests(unittest.TestCase):
         make_image_tar(self.images / "terratak-0.8.6-amd64.tar")
         run = FakeRun((["docker", "inspect"], 1, "no"), (["docker", "run"], 0, "abc"), (["docker", "logs"], 0, "boom: java died"))
         terratak._run = run
-        terratak.wait_healthy = lambda port, log, timeout=0: False
+        terratak.wait_healthy = lambda port, log, timeout=0, tls=False: False
         with self.assertRaises(takcerts.CertError) as cm:
             terratak.install(dict(terratak.DEFAULTS, firewall=False), "terratak-0.8.6-amd64.tar", self.lines.append)
         self.assertIn("did not answer", str(cm.exception))
@@ -235,6 +244,83 @@ class TerraTAKTests(unittest.TestCase):
         with self.assertRaises(takcerts.CertError) as cm:
             terratak.install(dict(terratak.DEFAULTS), "x.tar", self.lines.append)
         self.assertIn("podman", str(cm.exception))
+
+    # -- TLS -----------------------------------------------------------------------
+
+    def _le_dir(self):
+        d = self.tmp / "live" / "tak.example.com"
+        d.mkdir(parents=True)
+        (d / "fullchain.pem").write_text("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n")
+        (d / "privkey.pem").write_text("-----BEGIN PRIVATE KEY-----\nBBB\n-----END PRIVATE KEY-----\n")
+        return d
+
+    def test_tls_source_needs_both_files(self):
+        self.assertIsNone(terratak.tls_source(""))
+        self.assertIsNone(terratak.tls_source(self.tmp / "nowhere"))
+        d = self._le_dir()
+        (d / "privkey.pem").unlink()
+        self.assertIsNone(terratak.tls_source(d))
+        (d / "privkey.pem").write_text("k")
+        src = terratak.tls_source(str(d) + "/")
+        self.assertEqual((src["name"], src["fullchain"]), ("tak.example.com", str(d / "fullchain.pem")))
+
+    def test_write_tls_copies_the_pair_writes_helidon_config_and_a_renew_hook(self):
+        d = self._le_dir()
+        terratak.HOOK_DIR.mkdir()
+        terratak._write_tls(terratak.tls_source(d), "/usr/bin/docker", self.lines.append)
+        self.assertEqual((terratak.CONFIG_DIR / "tls" / "fullchain.pem").read_text(), (d / "fullchain.pem").read_text())
+        self.assertEqual((terratak.CONFIG_DIR / "tls" / "privkey.pem").read_text(), (d / "privkey.pem").read_text())
+        y = (terratak.CONFIG_DIR / "tls.yaml").read_text()
+        self.assertIn('path: "/config/tls/privkey.pem"', y)
+        self.assertIn('path: "/config/tls/fullchain.pem"', y)
+        self.assertIn("private-key:", y)
+        hook = (terratak.HOOK_DIR / "terratak-tls.sh").read_text()
+        self.assertIn('SRC="%s"' % d, hook)
+        self.assertIn('"/usr/bin/docker" restart terratak', hook)
+        self.assertIn("RENEWED_LINEAGE", hook)
+        self.assertIn("deploy hook", self._text())
+        shutil.rmtree(str(terratak.HOOK_DIR))
+        terratak._write_tls(terratak.tls_source(d), "/usr/bin/docker", self.lines.append)
+        self.assertIn("no certbot deploy-hook directory", self._text())
+
+    def test_install_with_a_certificate_serves_https(self):
+        make_image_tar(self.images / "terratak-0.8.6-amd64.tar")
+        run = FakeRun((["docker", "inspect"], 1, "no"), (["docker", "run"], 0, "abc"))
+        terratak._run = run
+        seen = {}
+        terratak.wait_healthy = lambda port, log, timeout=0, tls=False: seen.setdefault("tls", tls) or True
+        d = self._le_dir()
+        r = terratak.install(dict(terratak.DEFAULTS, firewall=False), "terratak-0.8.6-amd64.tar", self.lines.append,
+                             fqdn="tak.example.com", cert_dir=str(d))
+        self.assertEqual(r["url"], "https://tak.example.com:8080/")
+        self.assertTrue(seen["tls"])
+        argv = run.first("docker", "run")
+        self.assertIn("TERRATAK_SERVER_CONFIG_FILES=/config/tls.yaml", argv)
+        self.assertIn("--health-cmd", argv)
+        self.assertTrue((terratak.CONFIG_DIR / "tls" / "privkey.pem").exists())
+        self.assertIn("HTTPS with the tak.example.com certificate", self._text())
+        self.lines.clear()
+        terratak.install(dict(terratak.DEFAULTS, firewall=False, tls=False), "terratak-0.8.6-amd64.tar", self.lines.append,
+                         fqdn="tak.example.com", cert_dir=str(d))
+        self.assertIn("switched off", self._text())
+        last_run = [c for c in run.calls if c[:2] == ["docker", "run"]][-1]
+        self.assertNotIn("--health-cmd", last_run)
+        self.assertNotIn("TERRATAK_SERVER_CONFIG_FILES=/config/tls.yaml", last_run)
+
+    def test_status_reports_the_certificate_and_the_containers_scheme(self):
+        d = self._le_dir()
+        terratak._run = FakeRun((["docker", "--version"], 0, "Docker version 27.3.1"),
+                                (["docker", "inspect"], 0, RUNNING + "\tPATH=/x;TERRATAK_SERVER_CONFIG_FILES=/config/security.yaml:/config/tls.yaml;"),
+                                (["docker", "port"], 0, "0.0.0.0:8080"))
+        st = terratak.status(dict(terratak.DEFAULTS), fqdn="tak.example.com", cert_dir=str(d))
+        self.assertEqual((st["tls_available"], st["container"]["tls"], st["url"]), ("tak.example.com", True, "https://tak.example.com:8080/"))
+        terratak._run = FakeRun((["docker", "inspect"], 1, "no"))
+        st = terratak.status(dict(terratak.DEFAULTS), fqdn="tak.example.com", cert_dir=str(d))
+        self.assertEqual(st["url"], "https://tak.example.com:8080/")           # what an install would give
+        st = terratak.status(dict(terratak.DEFAULTS, tls=False), fqdn="tak.example.com", cert_dir=str(d))
+        self.assertEqual(st["url"], "http://tak.example.com:8080/")
+        st = terratak.status(dict(terratak.DEFAULTS), fqdn="tak.example.com")
+        self.assertEqual((st["tls_available"], st["url"]), ("", "http://tak.example.com:8080/"))
 
     # -- control, remove, status -------------------------------------------------
 

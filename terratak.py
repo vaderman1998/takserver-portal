@@ -16,6 +16,7 @@ import platform
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import tarfile
 import time
@@ -33,7 +34,8 @@ IMAGE_REPO = "terratak"
 INNER_PORT = 8080
 HEALTH_PATH = "/observe/health"
 DEFAULTS = {"port": 8080, "max_memory": "256M", "t3_memory": "512M", "map_center": "",
-            "auth_user": "", "auth_pass": "", "firewall": True}
+            "auth_user": "", "auth_pass": "", "firewall": True, "tls": True}
+HOOK_DIR = Path("/etc/letsencrypt/renewal-hooks/deploy")
 MEM_RE = re.compile(r"^\d{1,6}[MmGg]$")
 CENTER_RE = re.compile(r"^-?\d{1,3}(\.\d+)?,-?\d{1,2}(\.\d+)?(,\d{1,2})?$")
 USER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -154,6 +156,8 @@ def validate_settings(body, current):
         raise TerraTAKError("Set a password for the login name (or clear both).")
     if "firewall" in body:
         s["firewall"] = bool(body["firewall"])
+    if "tls" in body:
+        s["tls"] = bool(body["tls"])
     return s
 
 
@@ -186,6 +190,72 @@ def security_yaml(user, password):
         '        roles-allowed: ["admin"]',
         "",
     ])
+
+
+# Helidon 4 (TerraTAK 0.8.x ships 4.5.7): server.tls.private-key.pem.{key,cert-chain}.resource.path
+# takes a PKCS#8 key and a chain in PEM, which is exactly what certbot writes.
+TLS_YAML = """server:
+  tls:
+    private-key:
+      pem:
+        key:
+          resource:
+            path: "/config/tls/privkey.pem"
+        cert-chain:
+          resource:
+            path: "/config/tls/fullchain.pem"
+"""
+
+
+def tls_source(cert_dir):
+    """The certificate pair the portal itself serves (Let's Encrypt live dir or any PEM pair):
+    {'dir', 'fullchain', 'privkey', 'name'}, or None when it is not there."""
+    if not cert_dir:
+        return None
+    d = Path(str(cert_dir))
+    full, key = d / "fullchain.pem", d / "privkey.pem"
+    if not (full.is_file() and key.is_file()):
+        return None
+    return {"dir": str(d), "fullchain": str(full), "privkey": str(key), "name": d.name or str(d)}
+
+
+def renew_hook(cert_dir, exe):
+    """certbot deploy hook: refresh TerraTAK's copy of the pair and restart it after a renewal."""
+    return "\n".join([
+        "#!/bin/sh",
+        "# Written by TAK Server Portal: TerraTAK serves a copy of this certificate.",
+        "# certbot runs this after a successful renewal; refresh the copy, restart the container.",
+        'SRC="%s"' % cert_dir,
+        'DST="%s"' % (CONFIG_DIR / "tls"),
+        '[ -z "${RENEWED_LINEAGE:-}" ] || [ "$RENEWED_LINEAGE" = "$SRC" ] || exit 0',
+        '[ -f "$SRC/fullchain.pem" ] && [ -f "$SRC/privkey.pem" ] || exit 0',
+        'cp -L "$SRC/fullchain.pem" "$DST/fullchain.pem" && cp -L "$SRC/privkey.pem" "$DST/privkey.pem" && chmod 600 "$DST"/*.pem',
+        '"%s" restart %s >/dev/null 2>&1 || true' % (exe, CONTAINER),
+        "",
+    ])
+
+
+def _write_tls(src, exe, log):
+    """Copy the pair into the config mount (the container cannot follow Let's Encrypt's symlinks
+    into archive/), write Helidon's TLS file, leave certbot a deploy hook."""
+    tdir = CONFIG_DIR / "tls"
+    tdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for key in ("fullchain", "privkey"):
+        dst = tdir / (key + ".pem")
+        shutil.copyfile(src[key], str(dst))
+        os.chmod(str(dst), 0o600)
+    with open(str(CONFIG_DIR / "tls.yaml"), "w") as f:
+        f.write(TLS_YAML)
+    os.chmod(str(CONFIG_DIR / "tls.yaml"), 0o644)
+    log("  HTTPS with the certificate from %s (copied to %s)" % (src["dir"], tdir))
+    if HOOK_DIR.is_dir():
+        hook = HOOK_DIR / "terratak-tls.sh"
+        with open(str(hook), "w") as f:
+            f.write(renew_hook(src["dir"], exe))
+        os.chmod(str(hook), 0o755)
+        log("  certbot deploy hook %s refreshes the copy and restarts TerraTAK after each renewal" % hook)
+    else:
+        log("  no certbot deploy-hook directory (%s): after a renewal, reinstall TerraTAK to pick the new certificate up" % HOOK_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +333,13 @@ def container_state(exe):
     """None when there is no container, else status / running / image / health / started / ports."""
     rc, out = _run([exe, "inspect", "--type", "container", "--format",
                     "{{.State.Status}}\t{{.State.Running}}\t{{.Config.Image}}\t"
-                    "{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{.State.StartedAt}}", CONTAINER], timeout=20)
+                    "{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{.State.StartedAt}}\t"
+                    "{{range .Config.Env}}{{.}};{{end}}", CONTAINER], timeout=20)
     if rc != 0 or "\t" not in out:
         return None
-    parts = (out.splitlines()[0] + "\t\t\t\t").split("\t")
+    parts = (out.splitlines()[0] + "\t\t\t\t\t").split("\t")
     st = {"status": parts[0], "running": parts[1] == "true", "image": parts[2], "health": parts[3],
-          "started": parts[4][:19].replace("T", " "), "ports": ""}
+          "started": parts[4][:19].replace("T", " "), "ports": "", "tls": "tls.yaml" in parts[5]}
     rc, out = _run([exe, "port", CONTAINER, str(INNER_PORT)], timeout=20)
     if rc == 0 and out:
         st["ports"] = ", ".join(l.strip() for l in out.splitlines() if l.strip())
@@ -286,12 +357,14 @@ def loaded_images(exe):
     return rows
 
 
-def status(settings, fqdn=""):
+def status(settings, fqdn="", cert_dir=""):
     """Everything the TerraTAK card shows, in one call."""
     exe = engine()
+    src = tls_source(cert_dir)
     st = {"engine": engine_name(exe), "engine_path": exe, "engine_version": "", "daemon": False,
           "arch": host_arch(), "images": [], "container": None, "files": list_images(),
-          "settings": public_settings(settings), "url": "", "problems": []}
+          "settings": public_settings(settings), "url": "", "problems": [],
+          "tls_available": src["name"] if src else ""}
     if not exe:
         st["problems"].append("No container engine on this server. Install Docker (button below) or podman.")
         return st
@@ -304,7 +377,8 @@ def status(settings, fqdn=""):
     st["images"] = loaded_images(exe)
     st["container"] = container_state(exe)
     host = fqdn or socket.getfqdn()
-    st["url"] = "http://%s:%d/" % (host, int(settings["port"]))
+    tls = st["container"]["tls"] if st["container"] else bool(src and settings.get("tls", True))
+    st["url"] = "%s://%s:%d/" % ("https" if tls else "http", host, int(settings["port"]))
     return st
 
 
@@ -321,14 +395,19 @@ def _need_engine():
     return exe
 
 
-def wait_healthy(port, log, timeout=150):
+def wait_healthy(port, log, timeout=150, tls=False):
     """Poll the health endpoint until it answers (200, or 401 when basic auth guards it)."""
-    url = "http://127.0.0.1:%d%s" % (port, HEALTH_PATH)
+    url = "%s://127.0.0.1:%d%s" % ("https" if tls else "http", port, HEALTH_PATH)
+    ctx = None
+    if tls:                                     # the certificate names the host, we dial the loopback
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     start = time.time()
     last = 0
     while time.time() - start < timeout:
         try:
-            with urllib.request.urlopen(url, timeout=3) as r:
+            with urllib.request.urlopen(url, timeout=3, context=ctx) as r:
                 if r.status in (200, 204):
                     return True
         except urllib.error.HTTPError as e:
@@ -368,7 +447,7 @@ def _firewall_open(port, log):
     log("  no active ufw / firewalld found; nothing to open")
 
 
-def run_args(exe, image, s):
+def run_args(exe, image, s, tls=False):
     """The docker run argv for the saved settings (no secrets in it: the password lives in the
     security file, mounted read-only)."""
     argv = [exe, "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped",
@@ -376,8 +455,15 @@ def run_args(exe, image, s):
             "-e", "TERRATAK_MAX_MEMORY=" + s["max_memory"], "-e", "T3_MAX_MEMORY=" + s["t3_memory"]]
     if s.get("map_center"):
         argv += ["-e", "TERRATAK_MAP_CENTER=" + s["map_center"]]
+    cfg = []
     if s.get("auth_user") and s.get("auth_pass"):
-        argv += ["-v", "%s:/config:ro" % CONFIG_DIR, "-e", "TERRATAK_SERVER_CONFIG_FILES=/config/security.yaml"]
+        cfg.append("/config/security.yaml")
+    if tls:
+        cfg.append("/config/tls.yaml")
+        # the image's own HEALTHCHECK speaks plain http; with TLS on it would say "unhealthy" forever
+        argv += ["--health-cmd", "curl -fk https://localhost:%d%s || exit 1" % (INNER_PORT, HEALTH_PATH)]
+    if cfg:
+        argv += ["-v", "%s:/config:ro" % CONFIG_DIR, "-e", "TERRATAK_SERVER_CONFIG_FILES=" + ":".join(cfg)]
     if engine_name(exe) == "podman":
         argv.insert(2, "--label")
         argv.insert(3, "io.containers.autoupdate=disabled")
@@ -394,8 +480,10 @@ def _write_security(s, log):
     log("  login required: user '%s' (security file %s)" % (s["auth_user"], p))
 
 
-def install(settings, file_name, log, fqdn=""):
-    """Load the tarball, replace the container (data volume kept), run, open the firewall, wait."""
+def install(settings, file_name, log, fqdn="", cert_dir=""):
+    """Load the tarball, replace the container (data volume kept), run, open the firewall, wait.
+    cert_dir: where the portal's own certificate pair lives; with the tls setting on, TerraTAK
+    serves it too."""
     exe = _need_engine()
     eng = engine_name(exe)
     takcerts._acquire()
@@ -433,7 +521,14 @@ def install(settings, file_name, log, fqdn=""):
             _write_security(settings, log)
         else:
             log("  no login configured: anyone who can reach port %d can use and change TerraTAK" % port)
-        argv = run_args(exe, image, settings)
+        src = tls_source(cert_dir) if settings.get("tls", True) else None
+        if src:
+            _write_tls(src, exe, log)
+        elif settings.get("tls", True):
+            log("  no certificate pair in %s: TerraTAK stays plain HTTP" % (cert_dir or "the portal's certificate directory"))
+        else:
+            log("  HTTPS switched off in the settings: plain HTTP")
+        argv = run_args(exe, image, settings, tls=bool(src))
         log("Step 3/5: " + " ".join(argv))
         rc, out = _run(argv, timeout=180)
         if rc != 0:
@@ -445,20 +540,24 @@ def install(settings, file_name, log, fqdn=""):
         else:
             log("  left alone at your request")
         log("Step 5/5: Waiting for TerraTAK to answer on port %d..." % port)
-        if not wait_healthy(port, log):
+        if not wait_healthy(port, log, tls=bool(src)):
             rc, out = _run([exe, "logs", "--tail", "40", CONTAINER], timeout=30)
             for line in out.splitlines():
                 log("  | " + line)
             raise TerraTAKError("TerraTAK did not answer within the wait; its last log lines are above. The container is left in place.")
         host = fqdn or socket.getfqdn()
-        url = "http://%s:%d/" % (host, port)
+        url = "%s://%s:%d/" % ("https" if src else "http", host, port)
         log("=== TERRATAK RUNNING: %s ===" % image)
         log("  Web UI:   %s" % url)
         log("  REST API: %sopenapi/ui/index.html" % url)
         log("  Tiles reach ATAK through the TAK JSON pointer or QR code TerraTAK shows for each tileset.")
         if settings.get("auth_user") and settings.get("auth_pass"):
             log("  Sign in as '%s'. Devices streaming tiles need the same login." % settings["auth_user"])
-        log("  Traffic is plain HTTP; put a TLS reverse proxy in front if this port faces the internet.")
+        if src:
+            log("  HTTPS with the %s certificate; it follows certbot renewals through the deploy hook." % src["name"])
+        else:
+            log("  Traffic is plain HTTP. A browser that has visited TAK Server's 8443 on this host name will refuse")
+            log("  it (HSTS); use the IP address, or get a Let's Encrypt certificate onto the box and reinstall.")
         return {"image": image, "url": url}
     finally:
         takcerts._release()

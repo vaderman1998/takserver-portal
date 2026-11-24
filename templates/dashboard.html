@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TAK Server Portal &mdash; Dashboard</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=7">
+  <link rel="stylesheet" href="/static/css/style.css?v=8">
 </head>
 <body>
   <nav class="topbar">
@@ -166,7 +166,8 @@
         <div class="form-group"><label for="tt-pass">Password</label><input type="password" id="tt-pass" placeholder="password (6+ characters)" maxlength="128" autocomplete="new-password"></div>
       </div>
       <label class="check-row"><input type="checkbox" id="tt-firewall" checked> open the port in ufw / firewalld when installing</label>
-      <p class="muted small">TerraTAK has no login of its own. With a name and password set, the portal gives it a Helidon security file: everyone must sign in, only that user may change data, and ATAK devices streaming tiles need the same login. Left blank, anyone who can reach the port can use and change it, which is only sane on a private network or behind a reverse proxy. Traffic is plain HTTP either way; put a TLS reverse proxy in front if the port faces the internet.</p>
+      <label class="check-row"><input type="checkbox" id="tt-tls" checked> serve HTTPS with this server's Let's Encrypt certificate <span id="tt-tls-name" class="muted small"></span></label>
+      <p class="muted small">TerraTAK has no login of its own. With a name and password set, the portal gives it a Helidon security file: everyone must sign in, only that user may change data, and ATAK devices streaming tiles need the same login. Left blank, anyone who can reach the port can use and change it, which is only sane on a private network. With HTTPS off or no certificate on the box, traffic is plain HTTP, and a browser that has visited TAK Server's 8443 on this host name will refuse it (HSTS): use the IP address then.</p>
       <div class="form-inline">
         <button class="btn btn-sm btn-outline" id="tt-save">Save settings</button>
         <button class="btn btn-sm btn-outline" id="tt-auth-clear" style="display:none">Remove login</button>
@@ -274,6 +275,6 @@
 
   <a href="#terminal-section" id="job-pill" class="job-pill" style="display:none">&#9679; job running &mdash; show terminal</a>
 
-  <script src="/static/js/app.js?v=7"></script>
+  <script src="/static/js/app.js?v=8"></script>
 </body>
 </html>

@@ -411,7 +411,8 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/terratak":
             try:
-                return self._json(200, dict(terratak.status(terratak.settings_from(load_state()), portal_fqdn()), ok=True))
+                cert_dir = str(LE_CERT_DIR) if CERT_FILE.exists() and KEY_FILE.exists() else ""
+                return self._json(200, dict(terratak.status(terratak.settings_from(load_state()), portal_fqdn(), cert_dir), ok=True))
             except Exception as e:  # noqa: BLE001
                 return self._json(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
 
@@ -679,7 +680,8 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
             if op == "install":
                 name = terratak.image_path(body.get("file")).name
                 fqdn = portal_fqdn()
-                return job(f"terratak: install {name}", lambda log: terratak.install(st, name, log, fqdn))
+                cert_dir = str(LE_CERT_DIR) if CERT_FILE.exists() and KEY_FILE.exists() else ""
+                return job(f"terratak: install {name}", lambda log: terratak.install(st, name, log, fqdn, cert_dir))
             if op == "remove":
                 return job("terratak: remove container", lambda log: terratak.remove(log, with_data=False))
             if op == "remove-data":

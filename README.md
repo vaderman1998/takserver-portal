@@ -73,7 +73,12 @@ card under *Apps* runs it the way the image's own documentation says to:
   map center at start, and an optional login. TerraTAK has no login of its own; with a name and
   password set, the portal writes a Helidon basic-auth file to `/opt/terratak-config/` and
   mounts it read-only, so everyone must sign in and only that user may change data. Devices
-  streaming tiles need the same login. Traffic is plain HTTP; a TLS reverse proxy is yours to add.
+  streaming tiles need the same login.
+- HTTPS, on by default when the portal itself has a Let's Encrypt certificate: the pair is
+  copied into `/opt/terratak-config/tls/`, Helidon is told to serve it (`server.tls.private-key.pem`),
+  the health check switches to HTTPS, and a certbot deploy hook refreshes the copy and restarts
+  the container after each renewal. Without a certificate TerraTAK is plain HTTP, which a browser
+  that has seen TAK Server's 8443 on the same host name refuses (HSTS); use the IP address then.
 - Start / Stop / Restart / Logs, Remove container (keeps the data), Delete data volume.
 - No container engine on the box? **Install Docker** puts the distribution's docker.io
   (Debian / Ubuntu) or Docker CE from download.docker.com (RHEL / Rocky) on and enables it.
@@ -249,6 +254,5 @@ root-signed server certificate, was refused after its CA was revoked, and re-enr
 ## Not covered
 
 Containerised TAK Server (no `tak` user on the host), Federation Hub certificates, Let's Encrypt
-on 8446 (a keystore named `*-le.*` is kept across a root rotation but not managed), LDAP, TLS or
-an external database for TerraTAK (Helidon config files in `/opt/terratak-config/` are the place
-for those).
+on 8446 (a keystore named `*-le.*` is kept across a root rotation but not managed), LDAP, an
+external database for TerraTAK (a Helidon config file in `/opt/terratak-config/` is the place).

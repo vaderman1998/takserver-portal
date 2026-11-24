@@ -906,6 +906,9 @@
       fillIf("#tt-center", s.map_center); fillIf("#tt-user", s.auth_user);
       $("#tt-pass").placeholder = s.auth_set ? "password saved (leave blank to keep it)" : "password (6+ characters)";
       const fw = $("#tt-firewall"); if (!fw.dataset.touched) fw.checked = s.firewall !== false;
+      const tls = $("#tt-tls"); if (!tls.dataset.touched) tls.checked = s.tls !== false;
+      tls.disabled = !d.tls_available;
+      $("#tt-tls-name").textContent = d.tls_available ? "(" + d.tls_available + ")" : "(no certificate on this server: plain HTTP)";
       $("#tt-auth-clear").style.display = s.auth_set ? "" : "none";
     } catch (e) { /* portal restarting */ }
   }
@@ -949,7 +952,7 @@
     const s = (tt && tt.settings) || {};
     const upgrade = !!(tt && tt.container);
     ttJob("install", { file },
-      `${upgrade ? "UPGRADE" : "INSTALL"} TerraTAK from ${file}?\n\n• Loads the image into ${tt ? tt.engine : "the container engine"}\n• ${upgrade ? "Replaces the current container; the data volume with your tilesets is kept" : "Creates the container 'terratak' with the data volume 'terratak-data'"}\n• Port ${s.port}${s.auth_set ? ", login required (" + s.auth_user + ")" : ", NO login: anyone who reaches the port can use and change it"}\n• ${s.firewall !== false ? "Opens the port in ufw / firewalld" : "Firewall left alone"}\n\nTAK Server is not touched. Continue?`, true);
+      `${upgrade ? "UPGRADE" : "INSTALL"} TerraTAK from ${file}?\n\n• Loads the image into ${tt ? tt.engine : "the container engine"}\n• ${upgrade ? "Replaces the current container; the data volume with your tilesets is kept" : "Creates the container 'terratak' with the data volume 'terratak-data'"}\n• Port ${s.port}${s.auth_set ? ", login required (" + s.auth_user + ")" : ", NO login: anyone who reaches the port can use and change it"}\n• ${s.firewall !== false ? "Opens the port in ufw / firewalld" : "Firewall left alone"}\n• ${tt && tt.tls_available && s.tls !== false ? "HTTPS with the " + tt.tls_available + " certificate" : "Plain HTTP (no certificate, or HTTPS switched off)"}\n\nTAK Server is not touched. Continue?`, true);
   }
 
   async function deleteTTFile(name) {
@@ -974,7 +977,8 @@
     const pw = prompt("Enter the portal password to save the TerraTAK settings:");
     if (!pw) return;
     const body = { password: pw, port: $("#tt-port").value, max_memory: $("#tt-mem").value, t3_memory: $("#tt-t3mem").value,
-                   map_center: $("#tt-center").value, auth_user: $("#tt-user").value, firewall: $("#tt-firewall").checked };
+                   map_center: $("#tt-center").value, auth_user: $("#tt-user").value, firewall: $("#tt-firewall").checked,
+                   tls: $("#tt-tls").checked };
     if ($("#tt-pass").value) body.auth_pass = $("#tt-pass").value;
     if (clearAuth) body.clear_auth = true;
     const d = await api("POST", "/api/terratak/settings", body);
