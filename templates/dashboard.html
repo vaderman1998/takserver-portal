@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TAK Server Portal &mdash; Dashboard</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=5">
+</head>
+<body>
+  <nav class="topbar">
+    <div class="topbar-left">
+      <svg width="28" height="28" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="22" stroke="#60a5fa" stroke-width="3"/><path d="M24 10v28M10 24h28" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round"/><circle cx="24" cy="24" r="6" fill="#60a5fa" opacity=".25"/></svg>
+      <span class="topbar-title">TAK Server Portal</span>
+      <span class="topbar-nav"><a href="#upgrade">Upgrade</a><a href="#certificates">Certificates</a><a href="#terminal-section">Terminal</a></span>
+    </div>
+    <div class="topbar-right">
+      <span id="tak-version" class="topbar-version" title="Installed TAK Server version">&nbsp;</span>
+      <span id="tak-status" class="status-badge status-unknown">TAK: checking&hellip;</span>
+      <a href="/logout" class="btn btn-sm btn-outline">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <!-- ═══════════════ Upgrade ═══════════════ -->
+    <h2 class="section-heading" id="upgrade">Upgrade</h2>
+
+    <section class="card">
+      <h2>Upload TAK Server Package</h2>
+      <p class="muted">Upload a <code id="pkg-ext-label">.deb/.rpm</code> package file to prepare for upgrade. Installed now: <strong id="installed-version">checking&hellip;</strong></p>
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-zone-content">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <p>Drag &amp; drop a <strong class="pkg-ext-text">.deb/.rpm</strong> file here or <label for="file-input" class="link">browse</label></p>
+          <input type="file" id="file-input" accept=".deb,.rpm" hidden>
+        </div>
+        <div id="upload-progress" class="upload-progress" style="display:none">
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+          <span id="progress-text">Uploading…</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Uploaded Packages</h2>
+      <div id="file-list" class="file-list">
+        <p class="muted">No packages uploaded yet.</p>
+      </div>
+    </section>
+
+    <section class="card" id="actions-section">
+      <h2>Upgrade Actions</h2>
+      <p class="muted" id="selected-file-msg">Select an uploaded package above to enable install.</p>
+      <div class="action-buttons">
+        <button class="btn btn-action btn-install" id="btn-install" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <div><strong>Install Package</strong><small id="install-cmd"><em>sudo apt install -y ./file</em></small></div>
+        </button>
+        <button class="btn btn-action btn-reload" id="btn-daemon-reload">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <div><strong>Daemon Reload</strong><small>sudo systemctl daemon-reload</small></div>
+        </button>
+        <button class="btn btn-action btn-restart" id="btn-restart">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <div><strong>Restart TAK Server</strong><small>sudo systemctl restart takserver</small></div>
+        </button>
+        <button class="btn btn-action btn-taillog" id="btn-tail-log">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          <div><strong>View Server Log</strong><small>tail -f takserver-messaging.log</small></div>
+        </button>
+      </div>
+    </section>
+
+    <!-- ═══════════════ Terminal ═══════════════ -->
+    <section class="terminal-card" id="terminal-section">
+      <div class="terminal-titlebar">
+        <div class="terminal-titlebar-left">
+          <span class="terminal-dot dot-red"></span>
+          <span class="terminal-dot dot-amber"></span>
+          <span class="terminal-dot dot-green"></span>
+          <span class="terminal-title">Terminal &mdash; TAK Server</span>
+        </div>
+        <div class="terminal-titlebar-right">
+          <span id="term-status" class="status-badge status-unknown" style="display:none">idle</span>
+          <button class="btn btn-sm btn-stop" id="btn-stop" style="display:none" title="Stop running command">Stop</button>
+          <button class="btn btn-sm btn-outline" id="btn-copy" title="Copy the terminal text to the clipboard">Copy</button>
+          <button class="btn btn-sm btn-outline" id="btn-clear" title="Clear terminal">Clear</button>
+        </div>
+      </div>
+      <div id="terminal" class="terminal-body">
+        <div class="term-line term-info">TAK Server Portal — Terminal ready.</div>
+        <div class="term-line term-info">Upgrade actions and certificate jobs stream their output here.</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ Certificates ═══════════════ -->
+    <h2 class="section-heading" id="certificates">Certificates</h2>
+
+    <section class="card" id="certs-card">
+      <h2>Certificate Authority</h2>
+      <div id="certs-problems" class="alert alert-red" style="display:none"></div>
+      <div class="ca-grid">
+        <div class="ca-tile"><span class="ca-label">Root CA</span><strong id="ca-root-name">&ndash;</strong><span id="ca-root-exp" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Intermediate CA (current)</span><strong id="ca-int-name">&ndash;</strong><span id="ca-int-exp" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Server certificate signed by</span><strong id="ca-srv-signer">&ndash;</strong><span id="ca-srv-exp" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Certificate password</span><strong><code id="ca-pass">&bull;&bull;&bull;&bull;&bull;&bull;</code> <button id="ca-pass-toggle" class="btn-link">show</button></strong><span class="muted">keystores, truststore, client .p12</span></div>
+      </div>
+
+      <div id="ca-connector-row" class="row-note" style="display:none"></div>
+      <div id="ca-signer-row" class="row-note" style="display:none"></div>
+      <div id="ca-names-row" class="row-note" style="display:none"></div>
+
+      <div class="settings-row">
+        <label for="fqdn-input">Server name (FQDN) used in connection packages and on the server certificate</label>
+        <div class="form-inline">
+          <input type="text" id="fqdn-input" placeholder="tak.example.com" maxlength="253">
+          <button class="btn btn-sm btn-outline" id="fqdn-save">Save</button>
+          <span id="fqdn-msg" class="muted"></span>
+        </div>
+      </div>
+
+      <h3 class="sub-heading">Trust list <span class="muted" id="ts-file"></span></h3>
+      <p class="muted">What TAK Server accepts client certificates from right now. Old intermediates can be revoked once everyone has moved; the root is kept out of this list on purpose (devices still get it in their truststore).</p>
+      <div id="ts-table-wrap"><p class="muted">Loading&hellip;</p></div>
+
+      <div class="dl-row">
+        <a class="btn btn-sm btn-outline" id="dl-truststore" href="#">&#8595; Truststore (.p12)</a>
+        <a class="btn btn-sm btn-outline" href="/api/certs/download/ca.pem">&#8595; ca.pem</a>
+        <a class="btn btn-sm btn-outline" id="dl-package" href="/api/certs/package">&#8595; Enrollment package (.zip)</a>
+        <button class="btn btn-sm btn-outline" id="btn-certs-refresh">&#8635; Refresh</button>
+      </div>
+    </section>
+
+    <section class="card" id="snap-card">
+      <h2>Snapshots</h2>
+      <p class="muted">A copy of <code>/opt/tak/certs</code> and both CoreConfig files, kept in <code id="snap-dir">/root/tak-pki-snapshots</code>. Every certificate job saves one automatically before it starts (the newest 10 of those are kept). Restoring puts every file back and restarts TAK Server. TAK's database is not included: admin grants and enrolled certificates survive either way.</p>
+      <div class="form-inline">
+        <input type="text" id="snap-name" placeholder="name, e.g. before-rotate (optional)" maxlength="80">
+        <button class="btn btn-sm btn-primary" id="btn-snap-save">Save snapshot</button>
+        <button class="btn btn-sm btn-outline" id="btn-snap-refresh">&#8635; Refresh</button>
+      </div>
+      <div id="snap-table-wrap"><p class="muted">Loading&hellip;</p></div>
+    </section>
+
+    <section class="card" id="rotate-card">
+      <h2>Rotate Intermediate CA</h2>
+      <p class="muted" id="rotate-desc">Creates a new intermediate CA signed by your root CA, reissues the server and client certificates on it, and keeps the old intermediate trusted until you revoke it.</p>
+      <div id="rotation-window" class="alert alert-amber" style="display:none"></div>
+      <div class="form-grid">
+        <div class="form-group"><label for="rot-name">New intermediate CA name</label><input type="text" id="rot-name" placeholder="e.g. INTERMEDIATE-CA-02" maxlength="64"></div>
+        <div class="form-group"><label for="rot-days">Validity (days)</label><input type="number" id="rot-days" value="730" min="1" max="3652"></div>
+        <div class="form-group"><label for="rot-pass">New certificate password (optional)</label><input type="password" id="rot-pass" placeholder="leave blank to keep" autocomplete="new-password"></div>
+      </div>
+      <label class="check-row"><input type="checkbox" id="rot-reissue" checked> Also reissue the client certificates on this server (webadmin, user, integrations) on the new CA</label>
+      <p class="muted small">Untick to do only what the manual guide does: the server certificate moves, the certificates on disk stay on the old CA until you reissue or revoke. Either way enrolled devices are not touched. Names: letters, numbers, hyphens and dots only; an underscore makes TAK Server reject every enrolled device.</p>
+      <button class="btn btn-warn" id="btn-rotate">Rotate Intermediate CA</button>
+    </section>
+
+    <section class="card" id="live-card">
+      <h2>Live certificates by CA</h2>
+      <p class="muted">Every client UID's newest certificate in TAK Server's certificate table, grouped by the CA that signed it. This is the list that tells you when it is safe to revoke an old CA.</p>
+      <div class="form-inline">
+        <button class="btn btn-sm btn-outline" id="btn-live">Load</button>
+        <input type="text" id="live-search" placeholder="filter by user, callsign UID or CA" style="display:none">
+      </div>
+      <div id="live-summary" class="row-note" style="display:none"></div>
+      <div id="live-table-wrap"></div>
+    </section>
+
+    <section class="card" id="clients-card">
+      <h2>Client certificates</h2>
+      <p class="muted">Certificates made with makeCert.sh on this server (admin, user, integrations). Download the .p12 or a full connection package for ATAK / iTAK.</p>
+      <div id="client-list"><p class="muted">Loading&hellip;</p></div>
+      <div class="form-inline" style="margin-top:.75rem">
+        <input type="text" id="client-name" placeholder="new client name, e.g. operator1" maxlength="64">
+        <button class="btn btn-sm btn-primary" id="btn-client">Create certificate</button>
+      </div>
+    </section>
+
+    <section class="card card-danger" id="root-card">
+      <h2>Rotate Root CA</h2>
+      <p class="muted">Full PKI rebuild: new root CA, new intermediate CA, new server certificate, and the client certificates recreated. <strong class="danger-text">Every device is disconnected and must import the new truststore or re-enroll.</strong> The old certificate files are kept in a backup folder beside them.</p>
+      <div class="form-grid">
+        <div class="form-group"><label for="root-name">New root CA name</label><input type="text" id="root-name" placeholder="e.g. ROOT-CA-02" maxlength="64"></div>
+        <div class="form-group"><label for="root-int-name">New intermediate CA name</label><input type="text" id="root-int-name" placeholder="e.g. INTERMEDIATE-CA-01" maxlength="64"></div>
+        <div class="form-group"><label for="root-days">Root validity (days)</label><input type="number" id="root-days" value="3652" min="365" max="3652"></div>
+        <div class="form-group"><label for="root-int-days">Intermediate validity (days)</label><input type="number" id="root-int-days" value="730" min="1" max="3652"></div>
+        <div class="form-group"><label for="root-pass">New certificate password (optional)</label><input type="password" id="root-pass" placeholder="leave blank to keep" autocomplete="new-password"></div>
+      </div>
+      <button class="btn btn-danger" id="btn-root">Rotate Root CA</button>
+    </section>
+  </main>
+
+  <a href="#terminal-section" id="job-pill" class="job-pill" style="display:none">&#9679; job running &mdash; show terminal</a>
+
+  <script src="/static/js/app.js?v=5"></script>
+</body>
+</html>
