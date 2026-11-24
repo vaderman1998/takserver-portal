@@ -13,6 +13,9 @@
   let certs = null;        // last /api/certs/status
   let liveRows = null;     // last /api/certs/live
   let passShown = false;
+  let activeIsPortalUpdate = false;   // the running job is the portal's own check or update
+  let portalRestartPending = false;   // a successful update restarts the portal; sessions do not survive that
+  let portalInfo = null;              // last /api/portal
 
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
@@ -59,7 +62,7 @@
       opts.body = JSON.stringify(body);
     }
     const res = await fetch(url, opts);
-    if (res.status === 401) { location.href = "/login"; return null; }
+    if (res.status === 401) { location.href = portalRestartPending ? "/login?updated=1" : "/login"; return null; }
     try { return await res.json(); } catch (e) { return { error: "HTTP " + res.status }; }
   }
 
@@ -363,7 +366,12 @@
 
   async function pollLog(cmdId) {
     if (cmdFinished) return;
-    const data = await api("GET", "/api/logs/" + cmdId);
+    let data;
+    try { data = await api("GET", "/api/logs/" + cmdId); }
+    catch (e) {                     // the portal went away mid-job: only its own restart does that
+      if (activeIsPortalUpdate && portalRestartPending) { endPolling(); activeIsPortalUpdate = false; waitForPortalRestart(); }
+      return;
+    }
     if (!data || data.error) return;
 
     const newText = data.output.substring(lastOutputLen);
@@ -398,9 +406,42 @@
       setTimeout(() => { badge.style.display = "none"; }, 3000);
 
       setBusy(false);
+      if (activeIsPortalUpdate) {
+        activeIsPortalUpdate = false;
+        if (portalRestartPending && data.exit_code === 0 && data.output.indexOf("UPDATE COMPLETE") !== -1) { waitForPortalRestart(); return; }
+        portalRestartPending = false;
+        loadPortalInfo();
+        return;
+      }
       setTimeout(refreshStatus, 2000);
       if (activeIsCertJob) { loadCerts(); if (liveRows) loadLive(); loadSnapshots(); }
     }
+  }
+
+  function endPolling() {
+    cmdFinished = true;
+    if (pollingTimer) clearInterval(pollingTimer);
+    pollingTimer = null;
+    activeCmdId = null;
+    term.removeCursor();
+    term.finishOutput();
+    $("#btn-stop").style.display = "none";
+    setBusy(false);
+  }
+
+  /** After a successful update the unit restarts; sessions live in memory, so the first 401 means it is back. */
+  async function waitForPortalRestart() {
+    term.writeLine("Waiting for the portal to come back...", "term-info");
+    const started = Date.now();
+    let down = false;
+    while (Date.now() - started < 120000) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (res.status === 401 || (down && res.ok)) { location.href = "/login?updated=1"; return; }
+      } catch (e) { down = true; }
+    }
+    term.writeLine("The portal did not come back within two minutes. On the server: journalctl -u tak-portal -e", "term-error");
   }
 
   /** Confirm, ask for the portal password when the action is destructive, POST, stream. */
@@ -747,6 +788,69 @@
     beginJob(d, true);
   }
 
+  // ── Portal self-update ─────────────────────────────
+  async function loadPortalInfo() {
+    try {
+      const d = await api("GET", "/api/portal");
+      if (!d) return;
+      portalInfo = d;
+      const v = $("#pu-version"), note = $("#pu-note");
+      if (!d.ok) { v.textContent = d.error || "unknown"; return; }
+      if (!d.git) v.innerHTML = '<span class="txt-amber">git is not installed on this server (apt-get install -y git / dnf install -y git)</span>';
+      else if (!d.clone) v.innerHTML = `copied files in <code>${esc(d.dir)}</code>, not a git checkout yet`;
+      else v.innerHTML = `<code>${esc(d.commit || "?")}</code> ${esc(d.date)} <span class="muted">${esc(d.subject)}</span> on <code>${esc(d.branch)}</code>` + (d.remote ? ` from <code>${esc(d.remote)}</code>` : "");
+      if (d.dirty && d.dirty.length) {
+        note.style.display = "";
+        note.textContent = "Files changed on this server: " + d.dirty.join(", ") + ". Update refuses to overwrite them (git stash on the server first).";
+      } else note.style.display = "none";
+      const url = (d.clone && d.remote) || d.repo || "";
+      if (!$("#pu-repo").value && url && url.indexOf("***") === -1) $("#pu-repo").value = url;
+      if (!$("#pu-branch").value) $("#pu-branch").value = (d.clone && d.branch) || d.wanted_branch || "main";
+      $("#pu-token").placeholder = d.token_set ? "token saved (leave blank to keep it)" : "access token (private repository, optional)";
+      $("#pu-token-clear").style.display = d.token_set ? "" : "none";
+    } catch (e) { /* the portal may be restarting */ }
+  }
+
+  async function savePortalSettings(clearToken) {
+    const pw = prompt("Enter the portal password to save the update settings:");
+    if (!pw) return;
+    const msg = $("#pu-msg");
+    const d = await api("POST", "/api/portal/settings", {
+      password: pw, repo: $("#pu-repo").value.trim(), branch: $("#pu-branch").value.trim(),
+      token: clearToken ? "" : $("#pu-token").value, clear_token: !!clearToken,
+    });
+    if (d && d.ok) { msg.textContent = "Saved."; msg.className = "txt-green"; $("#pu-token").value = ""; loadPortalInfo(); }
+    else { msg.textContent = d && d.error ? d.error : "Could not save"; msg.className = "txt-red"; }
+  }
+
+  async function checkPortalUpdate() {
+    const d = await api("POST", "/api/portal/check", {});
+    if (!d || !d.ok) { alert(d && d.error ? d.error : "Could not start the check"); return; }
+    beginJob(d, true);
+    activeIsPortalUpdate = true;
+    portalRestartPending = false;
+  }
+
+  async function updatePortal() {
+    const restart = $("#pu-restart").checked, skip = $("#pu-skip-tests").checked;
+    const what = portalInfo && portalInfo.clone ? "Fast-forward this checkout to the repository" : "Fetch the repository into this folder (the copied files become a git checkout; uploads, logs and settings stay)";
+    if (!confirm(`UPDATE THE PORTAL?\n\n• ${what}\n• The current files are backed up to backups/ first\n• ${skip ? "Self-tests SKIPPED" : "The self-tests run; if they fail the update rolls back"}\n• ${restart ? "The portal restarts afterwards and you sign in again" : "No restart; the new files run after the next restart"}\n\nTAK Server is not touched. Continue?`)) return;
+    const pw = prompt("Enter the portal password to continue:");
+    if (!pw) return;
+    const d = await api("POST", "/api/portal/update", { password: pw, restart, skip_tests: skip });
+    if (!d || !d.ok) { alert(d && d.error ? d.error : "Could not start the update"); return; }
+    beginJob(d, true);
+    activeIsPortalUpdate = true;
+    portalRestartPending = restart;
+  }
+
+  function setupPortal() {
+    $("#pu-save").addEventListener("click", () => savePortalSettings(false));
+    $("#pu-token-clear").addEventListener("click", () => { if (confirm("Forget the saved access token?")) savePortalSettings(true); });
+    $("#pu-check").addEventListener("click", checkPortalUpdate);
+    $("#pu-update").addEventListener("click", updatePortal);
+  }
+
   // ── Certificates: actions ──────────────────────────
   function switchSigner(to) {
     const root = certs && certs.root ? certs.root.name : "the root CA";
@@ -829,12 +933,14 @@
     setupUpload();
     setupActions();
     setupCerts();
+    setupPortal();
     await fetchPlatform();
     refreshFiles();
     refreshStatus();
     loadSettings();
     loadCerts();
     loadSnapshots();
+    loadPortalInfo();
     setInterval(refreshStatus, 15000);
   }
 

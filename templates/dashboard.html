@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TAK Server Portal &mdash; Dashboard</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=5">
+  <link rel="stylesheet" href="/static/css/style.css?v=6">
 </head>
 <body>
   <nav class="topbar">
@@ -68,6 +68,31 @@
           <div><strong>View Server Log</strong><small>tail -f takserver-messaging.log</small></div>
         </button>
       </div>
+    </section>
+
+    <section class="card" id="portal-card">
+      <h2>Portal</h2>
+      <p class="muted">This portal itself: <span id="pu-version">checking&hellip;</span></p>
+      <div id="pu-note" class="alert alert-amber" style="display:none"></div>
+      <div class="settings-row">
+        <label for="pu-repo">Repository the updates come from, branch, and a read-only token for a private repository</label>
+        <div class="form-inline">
+          <input type="text" id="pu-repo" placeholder="https://github.com/you/takserver-portal.git" maxlength="300" style="min-width:300px">
+          <input type="text" id="pu-branch" placeholder="main" maxlength="100" style="max-width:110px">
+          <input type="password" id="pu-token" placeholder="access token (private repository, optional)" maxlength="255" autocomplete="new-password">
+          <button class="btn btn-sm btn-outline" id="pu-save">Save</button>
+          <button class="btn btn-sm btn-outline" id="pu-token-clear" style="display:none" title="Forget the saved token">Clear token</button>
+          <span id="pu-msg" class="muted"></span>
+        </div>
+      </div>
+      <p class="muted small">GitHub: a fine-grained personal access token with <em>Contents: read-only</em> on this one repository. It is kept in <code>portal-state.json</code> (mode 600) and never shown again. An SSH deploy key for root with a <code>git@github.com:</code> URL works too.</p>
+      <div class="form-inline" style="margin-top:.75rem">
+        <button class="btn btn-sm btn-outline job-btn" id="pu-check">Check for updates</button>
+        <button class="btn btn-sm btn-primary job-btn" id="pu-update">Update portal</button>
+        <label class="check-row" style="margin:0"><input type="checkbox" id="pu-restart" checked> restart the portal afterwards</label>
+        <label class="check-row" style="margin:0"><input type="checkbox" id="pu-skip-tests"> skip the self-tests</label>
+      </div>
+      <p class="muted small">Update backs the current files up to <code>backups/</code>, fast-forwards to the repository, runs the unit tests with the portal's own Python and rolls back if they fail. TAK Server is not touched. A copied install (no git checkout) is turned into one on its first update.</p>
     </section>
 
     <!-- ═══════════════ Terminal ═══════════════ -->
@@ -192,6 +217,6 @@
 
   <a href="#terminal-section" id="job-pill" class="job-pill" style="display:none">&#9679; job running &mdash; show terminal</a>
 
-  <script src="/static/js/app.js?v=5"></script>
+  <script src="/static/js/app.js?v=6"></script>
 </body>
 </html>

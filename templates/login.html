@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TAK Server Portal &mdash; Login</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=3">
+  <link rel="stylesheet" href="/static/css/style.css?v=6">
 </head>
 <body class="login-page">
   <div class="login-card">
@@ -16,6 +16,7 @@
       <p class="subtitle">Upgrade &amp; Certificate Management</p>
     </div>
     <div id="error-msg" class="error-msg" style="display:none">Invalid username or password</div>
+    <div id="updated-msg" class="info-msg" style="display:none">The portal was updated and restarted. Sign in again.</div>
     <form method="POST" action="/login" autocomplete="on">
       <div class="form-group">
         <label for="username">Username</label>
@@ -31,6 +32,9 @@
   <script>
     if (location.search.includes('error=1')) {
       document.getElementById('error-msg').style.display = 'block';
+    }
+    if (location.search.includes('updated=1')) {
+      document.getElementById('updated-msg').style.display = 'block';
     }
   </script>
 </body>

@@ -22,6 +22,7 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import selfupdate
 import snapshots
 import takcerts
 
@@ -406,6 +407,12 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/settings":
             return self._json(200, {"fqdn": portal_fqdn(), "default_host": default_server_host()})
 
+        if path == "/api/portal":
+            try:
+                return self._json(200, dict(selfupdate.info(selfupdate.settings_from(load_state())), ok=True))
+            except Exception as e:  # noqa: BLE001
+                return self._json(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
+
         if path == "/api/certs/status":
             try:
                 return self._json(200, takcerts.pki_status(portal_fqdn(), load_state().get("rotation") or {}))
@@ -565,11 +572,52 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/snapshots/"):
             return self._snapshots_post(path[len("/api/snapshots/"):])
 
+        if path.startswith("/api/portal/"):
+            return self._portal_post(path[len("/api/portal/"):])
+
         # ── certificate jobs ───────────────────────────────────────────
         if path.startswith("/api/certs/"):
             return self._certs_post(path[len("/api/certs/"):])
 
         self._json(404, {"error": "not found"})
+
+    def _portal_post(self, op):
+        """The portal's own update: check (streams, no password), settings and update (password)."""
+        body = self._body_json()
+        try:
+            if op == "check":
+                st = selfupdate.settings_from(load_state())
+                cmd_id = start_job("portal: check for updates", lambda log: selfupdate.check(st, log))
+                return self._json(200, {"ok": True, "cmd_id": cmd_id, "command": command_logs[cmd_id]["command"]})
+            if not password_ok(body.get("password")):
+                return self._json(403, {"error": "Incorrect portal password.", "need_password": True})
+            if op == "settings":
+                repo = selfupdate.validate_repo(body.get("repo") or selfupdate.DEFAULT_REPO)
+                branch = selfupdate.validate_branch(body.get("branch"))
+                upd = {"update_repo": repo, "update_branch": branch}
+                token = str(body.get("token") or "").strip()
+                if token:
+                    if not re.match(r"^[A-Za-z0-9_.~-]{8,255}$", token):
+                        return self._json(400, {"error": "That does not look like an access token."})
+                    upd["update_token"] = token
+                elif body.get("clear_token"):
+                    upd["update_token"] = ""
+                save_state(upd)
+                selfupdate.set_remote(repo)
+                return self._json(200, {"ok": True, "repo": selfupdate.redact(repo), "branch": branch,
+                                        "token_set": bool(selfupdate.settings_from(load_state())["token"])})
+            if op == "update":
+                st = selfupdate.settings_from(load_state())
+                restart = body.get("restart", True) is not False
+                skip = bool(body.get("skip_tests"))
+                cmd_id = start_job("portal: update" + (" and restart" if restart else ""),
+                                   lambda log: selfupdate.update(st, log, restart=restart, skip_tests=skip))
+                return self._json(200, {"ok": True, "cmd_id": cmd_id, "command": command_logs[cmd_id]["command"]})
+            return self._json(404, {"error": "unknown portal action"})
+        except takcerts.CertError as e:
+            return self._json(400, {"error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _snapshots_post(self, op):
         body = self._body_json()

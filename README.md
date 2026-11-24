@@ -6,8 +6,8 @@ upgrade packages, restart the server, watch its log, and manage the certificate 
 and connection packages).
 
 Built on the TAK Server Upgrade Portal. One Python file for HTTP (`app.py`), one for the PKI
-work (`takcerts.py`), one for file-level snapshots (`snapshots.py`), a login page and a
-dashboard. Standard library only.
+work (`takcerts.py`), one for file-level snapshots (`snapshots.py`), one for updating the portal from its repository
+(`selfupdate.py`), a login page and a dashboard. Standard library only.
 
 ## Install
 
@@ -28,6 +28,33 @@ Python 3.6 or newer: RHEL / Rocky 8's stock 3.6 works, and the installer uses th
 The top bar shows the installed TAK Server version: the `takserver` package as dpkg or rpm
 records it, in TAK's own form (`5.4-RELEASE-106`), with `shortver.txt` inside `takserver.war` as
 the fallback and a cross-check (the two are shown side by side, in amber, when they disagree).
+
+## Updating the portal
+
+The **Portal** card shows the commit this install runs (or that it is a plain copy of the files)
+and updates it from the repository:
+
+- **Check for updates** fetches and lists the commits and files that would change. Nothing moves.
+- **Update portal** (portal password) backs the current files up to `backups/` (newest 5 kept),
+  fast-forwards the checkout, runs the unit tests with the portal's own Python and, if they pass,
+  restarts the `tak-portal` unit through a transient systemd timer. The page waits for the portal
+  to come back and sends you to the login page. If the tests fail, the files go back to the
+  previous commit and nothing is restarted. Untick *restart* to switch the files without a
+  restart, or tick *skip the self-tests* when the suite cannot run on that box.
+- An install that was copied over by hand (no `.git`) is adopted on its first update: the folder
+  becomes a checkout of the repository; `uploads/`, `logs/`, `backups/` and `portal-state.json`
+  are kept. Local edits to tracked files make the update refuse until they are stashed.
+
+The repository URL and branch live in `portal-state.json`. A private repository needs either a
+read-only token saved in the card (GitHub: fine-grained token, *Contents: read-only*, kept in
+`portal-state.json` mode 600 and handed to git through `GIT_ASKPASS`, never on a command line) or
+an SSH deploy key for root with a `git@github.com:` URL. `git` must be installed on the server.
+
+From a shell the same thing is:
+
+```bash
+cd /root/takserver-portal && git pull --ff-only && systemctl restart tak-portal
+```
 
 ## What the certificate side does
 
