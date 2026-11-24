@@ -85,8 +85,9 @@ class CoreConfigInstallTakTests(unittest.TestCase):
         self.assertIn('crlFile="certs/files/TAK-ID-CA-01.crl"', text)   # the old CA is still trusted: keep its CRL
         self.assertIn('crlFile="certs/files/TAK-ID-CA-02.crl"', text)
         self.assertLess(text.index("TAK-ID-CA-01.crl"), text.index("TAK-ID-CA-02.crl"))
-        self.assertIn('CAkey="/opt/tak/certs/files/TAK-ID-CA-02"', text)
-        self.assertIn('CAcertificate="/opt/tak/certs/files/TAK-ID-CA-02"', text)
+        files = takcerts.FILES_DIR.as_posix()                          # /opt/tak/certs/files unless TAK_DIR says otherwise
+        self.assertIn('CAkey="%s/TAK-ID-CA-02"' % files, text)
+        self.assertIn('CAcertificate="%s/TAK-ID-CA-02"' % files, text)
         self.assertIn('keystoreFile="certs/files/TAK-ID-CA-02-signing.jks"', text)
         self.assertIn('validityDays="30"', text)                        # 30 < cap: untouched
         self.assertIn('truststoreFile="certs/files/fed-truststore.jks"', text)

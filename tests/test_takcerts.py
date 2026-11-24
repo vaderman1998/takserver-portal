@@ -136,15 +136,15 @@ class PemTests(unittest.TestCase):
             shutil.copy(self.pki.d / "INT-01.pem", d / "ca.pem")
             self.pki.sign("srv-int", "INT-01", "server")
             shutil.copy(self.pki.d / "srv-int.pem", d / "takserver.pem")
-            self.assertEqual(takcerts.server_cert_mode(d), "intermediate")
+            self.assertEqual(takcerts.server_cert_mode(d, "takserver"), "intermediate")
             self.pki.sign("srv-root", "ROOT-01", "server")
             shutil.copy(self.pki.d / "srv-root.pem", d / "takserver.pem")
-            self.assertEqual(takcerts.server_cert_mode(d), "root")
+            self.assertEqual(takcerts.server_cert_mode(d, "takserver"), "root")
             self.pki.sign("srv-old", "INT-02", "server")
             shutil.copy(self.pki.d / "srv-old.pem", d / "takserver.pem")
-            self.assertEqual(takcerts.server_cert_mode(d), "unknown")
+            self.assertEqual(takcerts.server_cert_mode(d, "takserver"), "unknown")
             (d / "takserver.pem").unlink()
-            self.assertEqual(takcerts.server_cert_mode(d), "unknown")
+            self.assertEqual(takcerts.server_cert_mode(d, "takserver"), "unknown")
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -508,7 +508,7 @@ class TrustListDecisionTests(unittest.TestCase):
         def fake_info(pem):
             info = real(pem)
             if info["cn"] == "INT-EXPIRED":
-                info["not_after"] = datetime.utcnow() - timedelta(days=3)
+                info["not_after"] = takcerts._utcnow() - timedelta(days=3)
                 info["days_left"] = -3
             return info
         takcerts.pem_info = fake_info

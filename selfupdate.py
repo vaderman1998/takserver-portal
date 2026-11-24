@@ -106,10 +106,10 @@ def git(args, env=None, timeout=180):
         return 127, str(exc)
 
 
-def _run(argv, timeout=120):
+def _run(argv, timeout=120, env=None):
     try:
         r = subprocess.run(argv, cwd=str(PORTAL_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           universal_newlines=True, timeout=timeout)
+                           universal_newlines=True, timeout=timeout, env=env)
         return r.returncode, r.stdout or ""
     except subprocess.TimeoutExpired:
         return 124, "timed out after %ds" % timeout
@@ -327,7 +327,15 @@ def run_tests(log, timeout=900):
         log("  compile: " + out.strip()[-600:])
         return False
     log("  %d files compile" % len(files))
-    rc, out = _run([py, "-m", "unittest", "discover", "-s", "tests"], timeout=timeout)
+    # The suite builds its own fixtures; an empty TAK_DIR keeps it from reading this box's live
+    # CoreConfig (a server certificate named after the host once failed a test that way).
+    sandbox = tempfile.mkdtemp(prefix="portal-selftest-")
+    env = dict(os.environ, TAK_DIR=os.path.join(sandbox, "tak"), PKI_SNAPSHOT_DIR=os.path.join(sandbox, "snaps"),
+               TAK_PORTAL_IMAGES=os.path.join(sandbox, "images"), TERRATAK_CONFIG_DIR=os.path.join(sandbox, "config"))
+    try:
+        rc, out = _run([py, "-m", "unittest", "discover", "-s", "tests"], timeout=timeout, env=env)
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
     for line in out.strip().splitlines()[-12:]:
         log("  " + line)
     return rc == 0
