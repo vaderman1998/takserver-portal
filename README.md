@@ -7,7 +7,8 @@ and connection packages).
 
 Built on the TAK Server Upgrade Portal. One Python file for HTTP (`app.py`), one for the PKI
 work (`takcerts.py`), one for file-level snapshots (`snapshots.py`), one for updating the portal from its repository
-(`selfupdate.py`), a login page and a dashboard. Standard library only.
+(`selfupdate.py`), one for running TerraTAK as a container (`terratak.py`), a login page and a
+dashboard. Standard library only.
 
 ## Install
 
@@ -55,6 +56,28 @@ From a shell the same thing is:
 ```bash
 cd /root/takserver-portal && git pull --ff-only && systemctl restart tak-portal
 ```
+
+## TerraTAK
+
+TAK Product Center ships TerraTAK, its tile generator and streaming server, as a container image
+per CPU architecture (`terratak-<version>-amd64.tar`, `-arm64.tar` from tak.gov). The **TerraTAK**
+card under *Apps* runs it the way the image's own documentation says to:
+
+- Drop the tarball on the card. It streams to `uploads/terratak/` (never held in memory) and is
+  checked: a real image, tagged `terratak:<version>`, built for this server's architecture.
+- **Install** loads the image, creates the container `terratak` with the data volume
+  `terratak-data` mounted at `/opt/terratak`, publishes the port, opens it in ufw / firewalld and
+  waits for the health endpoint. Installing a newer tarball later **upgrades**: the container is
+  replaced, the volume with every tileset is kept.
+- Settings (portal password): port, JVM heap for the server and for the tiling pipelines, the
+  map center at start, and an optional login. TerraTAK has no login of its own; with a name and
+  password set, the portal writes a Helidon basic-auth file to `/opt/terratak-config/` and
+  mounts it read-only, so everyone must sign in and only that user may change data. Devices
+  streaming tiles need the same login. Traffic is plain HTTP; a TLS reverse proxy is yours to add.
+- Start / Stop / Restart / Logs, Remove container (keeps the data), Delete data volume.
+- No container engine on the box? **Install Docker** puts the distribution's docker.io
+  (Debian / Ubuntu) or Docker CE from download.docker.com (RHEL / Rocky) on and enables it.
+  podman is used when it is what the box has.
 
 ## What the certificate side does
 
@@ -226,4 +249,6 @@ root-signed server certificate, was refused after its CA was revoked, and re-enr
 ## Not covered
 
 Containerised TAK Server (no `tak` user on the host), Federation Hub certificates, Let's Encrypt
-on 8446 (a keystore named `*-le.*` is kept across a root rotation but not managed), LDAP.
+on 8446 (a keystore named `*-le.*` is kept across a root rotation but not managed), LDAP, TLS or
+an external database for TerraTAK (Helidon config files in `/opt/terratak-config/` are the place
+for those).

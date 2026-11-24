@@ -4,14 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TAK Server Portal &mdash; Dashboard</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=6">
+  <link rel="stylesheet" href="/static/css/style.css?v=7">
 </head>
 <body>
   <nav class="topbar">
     <div class="topbar-left">
       <svg width="28" height="28" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="22" stroke="#60a5fa" stroke-width="3"/><path d="M24 10v28M10 24h28" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round"/><circle cx="24" cy="24" r="6" fill="#60a5fa" opacity=".25"/></svg>
       <span class="topbar-title">TAK Server Portal</span>
-      <span class="topbar-nav"><a href="#upgrade">Upgrade</a><a href="#certificates">Certificates</a><a href="#terminal-section">Terminal</a></span>
+      <span class="topbar-nav"><a href="#upgrade">Upgrade</a><a href="#apps">Apps</a><a href="#certificates">Certificates</a><a href="#terminal-section">Terminal</a></span>
     </div>
     <div class="topbar-right">
       <span id="tak-version" class="topbar-version" title="Installed TAK Server version">&nbsp;</span>
@@ -117,6 +117,63 @@
       </div>
     </section>
 
+    <!-- ═══════════════ Apps ═══════════════ -->
+    <h2 class="section-heading" id="apps">Apps</h2>
+
+    <section class="card" id="tt-card">
+      <h2>TerraTAK</h2>
+      <p class="muted">TAK Product Center's tile server: generates map tiles from your own imagery, terrain and vector data and streams them to ATAK. It ships as a container image; the portal loads the tarball and runs it with persistent storage, the way its own documentation describes.</p>
+      <div id="tt-problems" class="alert alert-amber" style="display:none"></div>
+      <div class="ca-grid">
+        <div class="ca-tile"><span class="ca-label">Container engine</span><strong id="tt-engine">&ndash;</strong><span id="tt-engine-sub" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Images loaded</span><strong id="tt-image">&ndash;</strong><span id="tt-image-sub" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Container</span><strong id="tt-container">&ndash;</strong><span id="tt-container-sub" class="muted"></span></div>
+        <div class="ca-tile"><span class="ca-label">Address</span><strong id="tt-url">&ndash;</strong><span id="tt-url-sub" class="muted"></span></div>
+      </div>
+      <div class="form-inline" style="margin-top:.75rem">
+        <button class="btn btn-sm btn-outline job-btn" id="tt-start" disabled>Start</button>
+        <button class="btn btn-sm btn-outline job-btn" id="tt-stop" disabled>Stop</button>
+        <button class="btn btn-sm btn-outline job-btn" id="tt-restart" disabled>Restart</button>
+        <button class="btn btn-sm btn-outline" id="tt-logs" disabled>Logs</button>
+        <button class="btn btn-sm btn-danger-outline job-btn" id="tt-remove" disabled>Remove container</button>
+        <button class="btn btn-sm btn-danger-outline job-btn" id="tt-remove-data" disabled>Delete data volume</button>
+        <button class="btn btn-sm btn-outline" id="tt-refresh">&#8635; Refresh</button>
+        <button class="btn btn-sm btn-primary job-btn" id="tt-install-engine" style="display:none">Install Docker</button>
+      </div>
+
+      <h3 class="sub-heading">Image tarballs</h3>
+      <p class="muted small">Download <code>terratak-&lt;version&gt;-amd64.tar</code> or <code>-arm64.tar</code> from tak.gov/products/terratak and drop it here. This server is <strong id="tt-arch">?</strong>. Installing a newer tarball upgrades in place; the data volume with your tilesets is kept.</p>
+      <div id="tt-drop-zone" class="drop-zone">
+        <div class="drop-zone-content">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <p>Drag &amp; drop a <strong>terratak-*.tar</strong> image here or <label for="tt-file-input" class="link">browse</label></p>
+          <input type="file" id="tt-file-input" accept=".tar" hidden>
+        </div>
+        <div id="tt-upload-progress" class="upload-progress" style="display:none">
+          <div class="progress-bar"><div id="tt-progress-fill" class="progress-fill"></div></div>
+          <span id="tt-progress-text">Uploading…</span>
+        </div>
+      </div>
+      <div id="tt-files"><p class="muted">No image tarballs uploaded yet.</p></div>
+
+      <h3 class="sub-heading">Run settings</h3>
+      <div class="form-grid">
+        <div class="form-group"><label for="tt-port">Port on this server</label><input type="number" id="tt-port" min="1" max="65535" placeholder="8080"></div>
+        <div class="form-group"><label for="tt-mem">Server memory (JVM heap)</label><input type="text" id="tt-mem" placeholder="256M" maxlength="8"></div>
+        <div class="form-group"><label for="tt-t3mem">Tiling memory per pipeline (2G for raw OSM)</label><input type="text" id="tt-t3mem" placeholder="512M" maxlength="8"></div>
+        <div class="form-group"><label for="tt-center">Map center at start, lon,lat[,zoom] (optional)</label><input type="text" id="tt-center" placeholder="-77.03,38.89,10" maxlength="40"></div>
+        <div class="form-group"><label for="tt-user">Login name (optional, recommended)</label><input type="text" id="tt-user" placeholder="admin" maxlength="64" autocomplete="off"></div>
+        <div class="form-group"><label for="tt-pass">Password</label><input type="password" id="tt-pass" placeholder="password (6+ characters)" maxlength="128" autocomplete="new-password"></div>
+      </div>
+      <label class="check-row"><input type="checkbox" id="tt-firewall" checked> open the port in ufw / firewalld when installing</label>
+      <p class="muted small">TerraTAK has no login of its own. With a name and password set, the portal gives it a Helidon security file: everyone must sign in, only that user may change data, and ATAK devices streaming tiles need the same login. Left blank, anyone who can reach the port can use and change it, which is only sane on a private network or behind a reverse proxy. Traffic is plain HTTP either way; put a TLS reverse proxy in front if the port faces the internet.</p>
+      <div class="form-inline">
+        <button class="btn btn-sm btn-outline" id="tt-save">Save settings</button>
+        <button class="btn btn-sm btn-outline" id="tt-auth-clear" style="display:none">Remove login</button>
+        <span id="tt-msg" class="muted"></span>
+      </div>
+    </section>
+
     <!-- ═══════════════ Certificates ═══════════════ -->
     <h2 class="section-heading" id="certificates">Certificates</h2>
 
@@ -217,6 +274,6 @@
 
   <a href="#terminal-section" id="job-pill" class="job-pill" style="display:none">&#9679; job running &mdash; show terminal</a>
 
-  <script src="/static/js/app.js?v=6"></script>
+  <script src="/static/js/app.js?v=7"></script>
 </body>
 </html>

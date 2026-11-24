@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import subprocess
@@ -25,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import selfupdate
 import snapshots
 import takcerts
+import terratak
 
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("TAK_PORTAL_PORT", 9090))
@@ -407,6 +409,12 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/settings":
             return self._json(200, {"fqdn": portal_fqdn(), "default_host": default_server_host()})
 
+        if path == "/api/terratak":
+            try:
+                return self._json(200, dict(terratak.status(terratak.settings_from(load_state()), portal_fqdn()), ok=True))
+            except Exception as e:  # noqa: BLE001
+                return self._json(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
+
         if path == "/api/portal":
             try:
                 return self._json(200, dict(selfupdate.info(selfupdate.settings_from(load_state())), ok=True))
@@ -501,15 +509,7 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
             return self._json(401, {"error": "unauthorized"})
 
         if path == "/api/upload":
-            filename, file_data = parse_multipart(self)
-            if not filename:
-                return self._json(400, {"error": "no file uploaded"})
-            filename = Path(filename).name
-            if not (filename.endswith(".deb") or filename.endswith(".rpm")):
-                return self._json(400, {"error": f"only {PKG_EXT} files allowed"})
-            dest = UPLOAD_DIR / filename
-            dest.write_bytes(file_data)
-            return self._json(200, {"ok": True, "filename": filename, "size": dest.stat().st_size})
+            return self._upload()
 
         if path == "/api/run":
             body = self._body_json()
@@ -575,11 +575,123 @@ class TAKPortalHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/portal/"):
             return self._portal_post(path[len("/api/portal/"):])
 
+        if path.startswith("/api/terratak/"):
+            return self._terratak_post(path[len("/api/terratak/"):])
+
         # ── certificate jobs ───────────────────────────────────────────
         if path.startswith("/api/certs/"):
             return self._certs_post(path[len("/api/certs/"):])
 
         self._json(404, {"error": "not found"})
+
+    def _upload(self):
+        """A package (.deb / .rpm) or a TerraTAK image tarball (.tar). The browser sends the raw
+        file body, streamed to disk in 1 MB pieces, so a 650 MB upload never sits in memory;
+        multipart (curl -F) still works for small files."""
+        query = parse_qs(urlparse(self.path).query)
+        kind = (query.get("kind") or ["package"])[0]
+        if kind == "terratak":
+            dest_dir, exts, what = terratak.IMAGE_DIR, (".tar",), "image tarball (.tar)"
+        else:
+            kind, dest_dir, exts, what = "package", UPLOAD_DIR, (".deb", ".rpm"), PKG_EXT + " package"
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
+            filename, data = parse_multipart(self)
+            if not filename:
+                return self._json(400, {"error": "no file uploaded"})
+            filename = Path(filename).name
+            if not filename.endswith(exts):
+                return self._json(400, {"error": f"only {what} files are allowed"})
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / filename
+            dest.write_bytes(data)
+        else:
+            filename = Path((query.get("name") or [""])[0]).name
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,150}$", filename) or not filename.endswith(exts):
+                self._drain(length)
+                return self._json(400, {"error": f"only {what} files are allowed"})
+            if length <= 0:
+                return self._json(400, {"error": "empty upload"})
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(str(dest_dir)).free
+            if free < length + 200 * 1048576:
+                self._drain(length)
+                return self._json(507, {"error": f"not enough disk space: {free // 1048576} MB free, "
+                                                 f"{length // 1048576} MB to receive plus headroom"})
+            dest, tmp = dest_dir / filename, dest_dir / (filename + ".part")
+            got = 0
+            try:
+                with open(str(tmp), "wb") as f:
+                    while got < length:
+                        chunk = self.rfile.read(min(1048576, length - got))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+            except OSError as e:
+                takcerts.unlink_quiet(tmp)
+                return self._json(500, {"error": f"could not write the file: {e}"})
+            if got != length:
+                takcerts.unlink_quiet(tmp)
+                return self._json(400, {"error": f"upload cut short: {got} of {length} bytes arrived"})
+            os.replace(str(tmp), str(dest))
+        out = {"ok": True, "filename": filename, "size": dest.stat().st_size}
+        if kind == "terratak":
+            try:
+                out["image"] = terratak.inspect_tar(dest)
+            except takcerts.CertError as e:
+                takcerts.unlink_quiet(dest)
+                return self._json(400, {"error": str(e)})
+        return self._json(200, out)
+
+    def _drain(self, length, cap=64 * 1048576):
+        """Read and discard a (small) request body so the error response gets through."""
+        left = min(length, cap)
+        while left > 0:
+            chunk = self.rfile.read(min(1048576, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+
+    def _terratak_post(self, op):
+        """TerraTAK: start / stop / restart / logs / delete-file without the password; settings,
+        install, remove, remove-data and install-engine with it."""
+        body = self._body_json()
+        st = terratak.settings_from(load_state())
+
+        def job(label, fn):
+            cmd_id = start_job(label, fn)
+            return self._json(200, {"ok": True, "cmd_id": cmd_id, "command": command_logs[cmd_id]["command"]})
+        try:
+            if op in ("start", "stop", "restart"):
+                return job(f"terratak: {op}", lambda log: terratak.control(op, log))
+            if op == "logs":
+                return self._json(200, {"ok": True, "text": terratak.logs(int(body.get("lines") or 200))})
+            if op == "delete-file":
+                return self._json(200, {"ok": True, "name": terratak.delete_image(body.get("name"))})
+            if not password_ok(body.get("password")):
+                return self._json(403, {"error": "Incorrect portal password.", "need_password": True})
+            if op == "settings":
+                new = terratak.validate_settings(body, st)
+                save_state({"terratak": new})
+                return self._json(200, {"ok": True, "settings": terratak.public_settings(new),
+                                        "note": "Settings take effect at the next install or upgrade, which recreates the container."})
+            if op == "install":
+                name = terratak.image_path(body.get("file")).name
+                fqdn = portal_fqdn()
+                return job(f"terratak: install {name}", lambda log: terratak.install(st, name, log, fqdn))
+            if op == "remove":
+                return job("terratak: remove container", lambda log: terratak.remove(log, with_data=False))
+            if op == "remove-data":
+                return job("terratak: remove container and data volume", lambda log: terratak.remove(log, with_data=True))
+            if op == "install-engine":
+                fam = OS_INFO["family"]
+                return job("terratak: install docker", lambda log: terratak.install_engine(fam, log))
+            return self._json(404, {"error": "unknown TerraTAK action"})
+        except takcerts.CertError as e:
+            return self._json(400, {"error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            return self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _portal_post(self, op):
         """The portal's own update: check (streams, no password), settings and update (password)."""

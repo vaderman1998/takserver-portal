@@ -16,6 +16,7 @@
   let activeIsPortalUpdate = false;   // the running job is the portal's own check or update
   let portalRestartPending = false;   // a successful update restarts the portal; sessions do not survive that
   let portalInfo = null;              // last /api/portal
+  let tt = null;                      // last /api/terratak
 
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
@@ -242,13 +243,10 @@
     }
   }
 
-  // ── File Upload ────────────────────────────────────
-  function setupUpload() {
-    const zone = $("#drop-zone");
-    const input = $("#file-input");
-    const progress = $("#upload-progress");
-    const fill = $("#progress-fill");
-    const text = $("#progress-text");
+  // ── File Upload (TAK packages and TerraTAK image tarballs share one uploader) ──
+  function setupUploader(cfg) {
+    const zone = $(cfg.zone), input = $(cfg.input), progress = $(cfg.progress), fill = $(cfg.fill), text = $(cfg.text);
+    const content = zone.querySelector(".drop-zone-content");
 
     zone.addEventListener("click", (e) => { if (e.target.tagName !== "LABEL") input.click(); });
     zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drag-over"); });
@@ -256,20 +254,19 @@
     zone.addEventListener("drop", (e) => {
       e.preventDefault();
       zone.classList.remove("drag-over");
-      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+      if (e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
     });
-    input.addEventListener("change", () => { if (input.files.length) uploadFile(input.files[0]); });
+    input.addEventListener("change", () => { if (input.files.length) upload(input.files[0]); input.value = ""; });
 
-    function uploadFile(file) {
-      if (!file.name.endsWith(".deb") && !file.name.endsWith(".rpm")) {
-        alert(`Only ${platform.pkg_ext} files are allowed.`);
-        return;
-      }
-      const fd = new FormData();
-      fd.append("file", file);
+    function upload(file) {
+      const exts = cfg.accept();
+      if (!exts.some(x => file.name.endsWith(x))) { alert(`Only ${exts.join(" / ")} files are allowed here.`); return; }
       const xhr = new XMLHttpRequest();
       progress.style.display = "block";
-      $(".drop-zone-content").style.display = "none";
+      content.style.display = "none";
+      fill.style.width = "0%";
+      fill.style.background = "";
+      text.textContent = "Uploading…";
 
       xhr.upload.addEventListener("progress", (e) => {
         if (e.lengthComputable) {
@@ -279,32 +276,45 @@
         }
       });
 
+      const done = (ok, msg) => {
+        text.textContent = msg;
+        fill.style.width = "100%";
+        fill.style.background = ok ? "var(--green)" : "var(--red)";
+        term.writeDivider();
+        term.writeLine(msg, ok ? "term-success" : "term-error");
+        setTimeout(() => {
+          progress.style.display = "none";
+          content.style.display = "";
+          fill.style.width = "0%";
+          fill.style.background = "";
+        }, ok ? 2500 : 6000);
+      };
       xhr.addEventListener("load", () => {
-        if (xhr.status === 200) {
-          const res = JSON.parse(xhr.responseText);
-          text.textContent = `Uploaded ${res.filename} (${formatSize(res.size)})`;
-          fill.style.width = "100%";
-          fill.style.background = "var(--green)";
-          selectedFile = res.filename;
-          refreshFiles().then(() => selectFile(res.filename));
-          term.writeDivider();
-          term.writeLine(`Uploaded: ${res.filename} (${formatSize(res.size)})`, "term-success");
-          setTimeout(() => {
-            progress.style.display = "none";
-            $(".drop-zone-content").style.display = "";
-            fill.style.width = "0%";
-            fill.style.background = "";
-          }, 2500);
-        } else {
-          text.textContent = "Upload failed!";
-          fill.style.background = "var(--red)";
-          term.writeLine("Upload failed!", "term-error");
-        }
+        let res = null;
+        try { res = JSON.parse(xhr.responseText); } catch (e) { /* not json */ }
+        if (xhr.status === 200 && res && res.ok) { done(true, `Uploaded ${res.filename} (${formatSize(res.size)})`); cfg.onDone(res); }
+        else done(false, "Upload failed: " + (res && res.error ? res.error : "HTTP " + xhr.status));
       });
+      xhr.addEventListener("error", () => done(false, "Upload failed: the connection dropped"));
 
-      xhr.open("POST", "/api/upload");
-      xhr.send(fd);
+      // the raw file is the body: the server streams it to disk instead of holding it in memory
+      xhr.open("POST", "/api/upload?kind=" + cfg.kind + "&name=" + encodeURIComponent(file.name));
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.send(file);
     }
+  }
+
+  function setupUpload() {
+    setupUploader({
+      zone: "#drop-zone", input: "#file-input", progress: "#upload-progress", fill: "#progress-fill", text: "#progress-text",
+      kind: "package", accept: () => [".deb", ".rpm"],
+      onDone: (res) => { selectedFile = res.filename; refreshFiles().then(() => selectFile(res.filename)); },
+    });
+    setupUploader({
+      zone: "#tt-drop-zone", input: "#tt-file-input", progress: "#tt-upload-progress", fill: "#tt-progress-fill", text: "#tt-progress-text",
+      kind: "terratak", accept: () => [".tar"],
+      onDone: () => loadTerraTAK(),
+    });
   }
 
   // ── Jobs (shell commands and certificate jobs share the terminal) ──
@@ -415,6 +425,7 @@
       }
       setTimeout(refreshStatus, 2000);
       if (activeIsCertJob) { loadCerts(); if (liveRows) loadLive(); loadSnapshots(); }
+      loadTerraTAK();
     }
   }
 
@@ -851,6 +862,145 @@
     $("#pu-update").addEventListener("click", updatePortal);
   }
 
+  // ── TerraTAK ───────────────────────────────────────
+  async function loadTerraTAK() {
+    try {
+      const d = await api("GET", "/api/terratak");
+      if (!d) return;
+      tt = d;
+      const set = (id, main, sub, cls) => {
+        const m = $(id); m.textContent = main; m.className = cls || "";
+        const s = $(id + "-sub"); if (s) s.textContent = sub || "";
+      };
+      if (!d.ok) { set("#tt-engine", "error", d.error, "txt-red"); return; }
+      $("#tt-arch").textContent = d.arch;
+      const problems = $("#tt-problems");
+      if (d.problems && d.problems.length) { problems.style.display = ""; problems.textContent = d.problems.join(" "); }
+      else problems.style.display = "none";
+      $("#tt-install-engine").style.display = d.engine ? "none" : "";
+      const eng = !!(d.engine && d.daemon);
+      set("#tt-engine", d.engine ? d.engine + (d.daemon ? "" : " (not running)") : "none", d.engine_version, eng ? "txt-green" : "txt-amber");
+      const imgs = d.images || [];
+      set("#tt-image", imgs.length ? imgs.map(i => i.name.replace("terratak:", "")).join(", ") : "none", imgs.length ? imgs[0].size : (eng ? "upload a tarball below" : ""));
+      const c = d.container;
+      if (!c) set("#tt-container", "none", eng ? "install an image below" : "", "muted");
+      else set("#tt-container", c.running ? "running" + (c.health ? " (" + c.health + ")" : "") : c.status,
+               c.image + (c.ports ? " on " + c.ports : "") + (c.started ? ", since " + c.started : ""),
+               c.running ? (c.health === "unhealthy" ? "txt-amber" : "txt-green") : "txt-red");
+      const u = $("#tt-url"), us = $("#tt-url-sub");
+      if (c && c.running && d.url) {
+        u.innerHTML = `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>`;
+        us.textContent = d.settings.auth_set ? "login: " + d.settings.auth_user : "no login configured";
+      } else { u.textContent = d.url || "–"; u.className = "muted"; us.textContent = c ? "container stopped" : ""; }
+      const has = !!c, running = !!(c && c.running);
+      $("#tt-start").disabled = !(eng && has && !running);
+      $("#tt-stop").disabled = !(eng && running);
+      $("#tt-restart").disabled = !(eng && running);
+      $("#tt-logs").disabled = !(eng && has);
+      $("#tt-remove").disabled = !(eng && has);
+      $("#tt-remove-data").disabled = !eng;
+      renderTTFiles(d);
+      const s = d.settings || {};
+      const fillIf = (id, v) => { const el = $(id); if (el && !el.dataset.touched) el.value = v == null ? "" : v; };
+      fillIf("#tt-port", s.port); fillIf("#tt-mem", s.max_memory); fillIf("#tt-t3mem", s.t3_memory);
+      fillIf("#tt-center", s.map_center); fillIf("#tt-user", s.auth_user);
+      $("#tt-pass").placeholder = s.auth_set ? "password saved (leave blank to keep it)" : "password (6+ characters)";
+      const fw = $("#tt-firewall"); if (!fw.dataset.touched) fw.checked = s.firewall !== false;
+      $("#tt-auth-clear").style.display = s.auth_set ? "" : "none";
+    } catch (e) { /* portal restarting */ }
+  }
+
+  function renderTTFiles(d) {
+    const wrap = $("#tt-files");
+    const files = d.files || [];
+    if (!files.length) { wrap.innerHTML = '<p class="muted">No image tarballs uploaded yet.</p>'; return; }
+    const eng = !!(d.engine && d.daemon);
+    let h = '<table class="tbl"><thead><tr><th>File</th><th>Image</th><th>Built for</th><th>Size</th><th></th></tr></thead><tbody>';
+    files.forEach(f => {
+      const archOk = !f.arch || f.arch === d.arch;
+      const loaded = (d.images || []).some(i => i.name === f.name);
+      const current = d.container && d.container.image === f.name;
+      h += `<tr><td><code>${esc(f.file)}</code> <span class="muted small">${esc(timeAgo(f.mtime))}</span></td>
+        <td>${f.error ? `<span class="txt-red">${esc(f.error)}</span>` : esc(f.name) + (current ? ' <span class="txt-green small">running</span>' : loaded ? ' <span class="muted small">loaded</span>' : "")}</td>
+        <td class="${archOk ? "" : "txt-red"}">${esc(f.arch || "?")}${archOk ? "" : " (this server is " + esc(d.arch) + ")"}</td>
+        <td>${esc(formatSize(f.size))}</td>
+        <td class="ta-right"><button class="btn btn-sm btn-primary job-btn" data-ttinstall="${esc(f.file)}" ${eng && !f.error && archOk ? "" : "disabled"}>${d.container ? (current ? "Reinstall" : "Upgrade to this") : "Install"}</button> <button class="btn btn-sm btn-outline" data-ttdel="${esc(f.file)}" title="Delete this file">&#10005;</button></td></tr>`;
+    });
+    h += "</tbody></table>";
+    wrap.innerHTML = h;
+    wrap.querySelectorAll("[data-ttinstall]").forEach(b => b.addEventListener("click", () => installTerraTAK(b.dataset.ttinstall)));
+    wrap.querySelectorAll("[data-ttdel]").forEach(b => b.addEventListener("click", () => deleteTTFile(b.dataset.ttdel)));
+  }
+
+  async function ttJob(op, body, confirmText, needPassword) {
+    if (confirmText && !confirm(confirmText)) return;
+    body = body || {};
+    if (needPassword) {
+      const pw = prompt("Enter the portal password to continue:");
+      if (!pw) return;
+      body.password = pw;
+    }
+    const d = await api("POST", "/api/terratak/" + op, body);
+    if (!d || !d.ok) { alert(d && d.error ? d.error : "Could not start"); return; }
+    beginJob(d, true);
+  }
+
+  function installTerraTAK(file) {
+    const s = (tt && tt.settings) || {};
+    const upgrade = !!(tt && tt.container);
+    ttJob("install", { file },
+      `${upgrade ? "UPGRADE" : "INSTALL"} TerraTAK from ${file}?\n\n• Loads the image into ${tt ? tt.engine : "the container engine"}\n• ${upgrade ? "Replaces the current container; the data volume with your tilesets is kept" : "Creates the container 'terratak' with the data volume 'terratak-data'"}\n• Port ${s.port}${s.auth_set ? ", login required (" + s.auth_user + ")" : ", NO login: anyone who reaches the port can use and change it"}\n• ${s.firewall !== false ? "Opens the port in ufw / firewalld" : "Firewall left alone"}\n\nTAK Server is not touched. Continue?`, true);
+  }
+
+  async function deleteTTFile(name) {
+    if (!confirm(`Delete ${name}?\n\nOnly the uploaded file goes; a loaded image or running container is not affected.`)) return;
+    const d = await api("POST", "/api/terratak/delete-file", { name });
+    if (!d || !d.ok) alert(d && d.error ? d.error : "Could not delete");
+    loadTerraTAK();
+  }
+
+  async function ttLogs() {
+    const d = await api("POST", "/api/terratak/logs", { lines: 200 });
+    term.writeDivider();
+    term.writePrompt("terratak: logs --tail 200");
+    term.finishOutput();
+    if (!d || !d.ok) { term.writeLine(d && d.error ? d.error : "no logs", "term-error"); return; }
+    term.appendOutput((d.text || "(empty)") + "\n");
+    term.finishOutput();
+    term.focus();
+  }
+
+  async function saveTTSettings(clearAuth) {
+    const pw = prompt("Enter the portal password to save the TerraTAK settings:");
+    if (!pw) return;
+    const body = { password: pw, port: $("#tt-port").value, max_memory: $("#tt-mem").value, t3_memory: $("#tt-t3mem").value,
+                   map_center: $("#tt-center").value, auth_user: $("#tt-user").value, firewall: $("#tt-firewall").checked };
+    if ($("#tt-pass").value) body.auth_pass = $("#tt-pass").value;
+    if (clearAuth) body.clear_auth = true;
+    const d = await api("POST", "/api/terratak/settings", body);
+    const msg = $("#tt-msg");
+    if (d && d.ok) {
+      msg.textContent = "Saved. " + (d.note || ""); msg.className = "txt-green";
+      $("#tt-pass").value = "";
+      $$("#tt-card input").forEach(el => { delete el.dataset.touched; });
+      loadTerraTAK();
+    } else { msg.textContent = d && d.error ? d.error : "Could not save"; msg.className = "txt-red"; }
+  }
+
+  function setupTerraTAK() {
+    $("#tt-start").addEventListener("click", () => ttJob("start"));
+    $("#tt-stop").addEventListener("click", () => ttJob("stop", null, "Stop TerraTAK?\n\nDevices streaming its tiles lose the layer until it is started again."));
+    $("#tt-restart").addEventListener("click", () => ttJob("restart"));
+    $("#tt-logs").addEventListener("click", ttLogs);
+    $("#tt-refresh").addEventListener("click", loadTerraTAK);
+    $("#tt-remove").addEventListener("click", () => ttJob("remove", null, "Remove the TerraTAK container?\n\nThe data volume (tilesets, database) is kept; installing an image again brings it all back.", true));
+    $("#tt-remove-data").addEventListener("click", () => ttJob("remove-data", null, "DELETE the TerraTAK container AND its data volume?\n\nEvery tileset and the database are gone for good.", true));
+    $("#tt-install-engine").addEventListener("click", () => ttJob("install-engine", null, "Install Docker on this server?\n\nDebian/Ubuntu: apt-get install docker.io\nRHEL/Rocky: Docker CE from download.docker.com\nThen: systemctl enable --now docker\n\nContinue?", true));
+    $("#tt-save").addEventListener("click", () => saveTTSettings(false));
+    $("#tt-auth-clear").addEventListener("click", () => { if (confirm("Remove the TerraTAK login?\n\nAfter the next install or upgrade anyone who reaches the port can use and change it.")) saveTTSettings(true); });
+    $$("#tt-card input").forEach(el => el.addEventListener("input", () => { el.dataset.touched = "1"; }));
+  }
+
   // ── Certificates: actions ──────────────────────────
   function switchSigner(to) {
     const root = certs && certs.root ? certs.root.name : "the root CA";
@@ -934,6 +1084,7 @@
     setupActions();
     setupCerts();
     setupPortal();
+    setupTerraTAK();
     await fetchPlatform();
     refreshFiles();
     refreshStatus();
@@ -941,6 +1092,7 @@
     loadCerts();
     loadSnapshots();
     loadPortalInfo();
+    loadTerraTAK();
     setInterval(refreshStatus, 15000);
   }
 
